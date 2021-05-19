@@ -6,6 +6,8 @@ import org.apache.maven.plugin.AbstractMojo;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugins.annotations.Mojo;
 import org.apache.maven.plugins.annotations.Parameter;
+import org.apache.maven.settings.Proxy;
+import org.apache.maven.settings.Settings;
 
 import java.io.File;
 import java.io.IOException;
@@ -35,14 +37,19 @@ public class SwaggerHubDownload extends AbstractMojo {
     private String protocol;
     @Parameter(property = "download.token")
     private String token;
+    @Parameter(property = "download.definitionType", defaultValue = "API")
+    private String definitionType;
     @Parameter(property = "download.outputFile", required = true)
     private String outputFile;
     @Parameter(property = "download.basepath")
     private String basepath;
 
+    @Parameter( defaultValue = "${settings}", readonly = true )
+    private Settings settings;
+
 
     public void execute() throws MojoExecutionException {
-        SwaggerHubClient swaggerHubClient = new SwaggerHubClient(host, port, protocol, token, getLog(), basepath);
+        SwaggerHubClient swaggerHubClient = new SwaggerHubClient(host, port, protocol, token, getLog(), basepath, settings.getActiveProxy());
         getLog().info("Downloading from " + host
                 + ": basepath-" + basepath
                 + ": api-" + api
@@ -51,7 +58,8 @@ public class SwaggerHubDownload extends AbstractMojo {
                 + ", format-" + format
                 + ", outputFile-" + outputFile);
 
-        SwaggerHubRequest swaggerHubRequest = new SwaggerHubRequest.Builder(api, owner, version)
+        SwaggerHubRequest swaggerHubRequest = new SwaggerHubRequest.Builder(
+                DefinitionType.getByParamValue(definitionType), api, owner, version)
                 .format(format)
                 .build();
 

@@ -1,20 +1,24 @@
 package io.swagger.swaggerhub.plugin;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
-import com.squareup.okhttp.HttpUrl;
-import com.squareup.okhttp.MediaType;
-import com.squareup.okhttp.OkHttpClient;
-import com.squareup.okhttp.Request;
-import com.squareup.okhttp.RequestBody;
-import com.squareup.okhttp.Response;
 import io.swagger.swaggerhub.plugin.requests.SaveSCMPluginConfigRequest;
 import io.swagger.swaggerhub.plugin.requests.SwaggerHubRequest;
-import java.util.stream.Stream;
+import okhttp3.Authenticator;
+import okhttp3.Credentials;
+import okhttp3.HttpUrl;
+import okhttp3.MediaType;
+import okhttp3.OkHttpClient;
+import okhttp3.Request;
+import okhttp3.RequestBody;
+import okhttp3.Response;
+import okhttp3.Route;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.maven.plugin.MojoExecutionException;
 import org.apache.maven.plugin.logging.Log;
 
 import java.io.IOException;
+import java.net.InetSocketAddress;
+import java.net.Proxy;
 import java.util.Optional;
 import java.util.concurrent.TimeUnit;
 
@@ -24,26 +28,61 @@ public class SwaggerHubClient {
     private final int port;
     private final String token;
     private final String protocol;
-    private static final String APIS = "apis";
     private Log log;
     private String basePath;
 
-    public SwaggerHubClient(String host, int port, String protocol, String token, Log log, String basePath) {
-        client = setupHttpClient();
+    public SwaggerHubClient(String host, int port, String protocol, String token, Log log, String basePath, org.apache.maven.settings.Proxy proxy) {
+        client = setupHttpClient(proxy);
         this.host = host;
         this.port = port;
         this.protocol = protocol;
         this.token = token;
-        this.log=log;
+        this.log = log;
         this.basePath = basePath;
     }
 
-    private OkHttpClient setupHttpClient(){
-        OkHttpClient client = new OkHttpClient();
-        client.setConnectTimeout(30, TimeUnit.SECONDS);
-        client.setReadTimeout(30, TimeUnit.SECONDS);
-        client.setWriteTimeout(30, TimeUnit.SECONDS);
+    private OkHttpClient setupHttpClient(org.apache.maven.settings.Proxy proxy) {
+
+        OkHttpClient.Builder okHttpClientBuilder = new OkHttpClient.Builder();
+        if (proxy != null) {
+            Proxy.Type proxyType = getProxyType(proxy.getProtocol());
+            Proxy httpProxy = new Proxy(proxyType,
+                    new InetSocketAddress(proxy.getHost(), proxy.getPort()));
+            okHttpClientBuilder.proxy(httpProxy);
+            if (StringUtils.isNotEmpty(proxy.getUsername())) {
+                Authenticator proxyAuthenticator = new Authenticator() {
+                    @Override
+                    public Request authenticate(Route route, Response response) throws IOException {
+                        String credential = Credentials.basic(proxy.getUsername(), proxy.getPassword());
+                        return response.request().newBuilder()
+                                .header("Proxy-Authorization", credential)
+                                .build();
+                    }
+                };
+                okHttpClientBuilder.proxyAuthenticator(proxyAuthenticator);
+            }
+        }
+
+        OkHttpClient client = okHttpClientBuilder
+                .connectTimeout(30, TimeUnit.SECONDS)
+                .readTimeout(30, TimeUnit.SECONDS)
+                .writeTimeout(30, TimeUnit.SECONDS)
+                .build();
+
         return client;
+    }
+
+    /**
+     * Only accepts http or https protocol, otherwise returns direct connection.
+     *
+     * @param String protocol name
+     * @return java.net.Proxy.Type
+     */
+    private java.net.Proxy.Type getProxyType(String protocol) {
+        if ("http".equals(protocol) || "https".equals(protocol) || protocol == null) {
+            return java.net.Proxy.Type.HTTP;
+        }
+        return Proxy.Type.DIRECT;
     }
 
     public String getDefinition(SwaggerHubRequest swaggerHubRequest) throws MojoExecutionException {
@@ -85,9 +124,9 @@ public class SwaggerHubClient {
         Request httpRequest = buildPostRequest(httpUrl, mediaType, swaggerHubRequest.getSwagger());
         try {
             Response response = client.newCall(httpRequest).execute();
-            if(!response.isSuccessful()){
+            if (!response.isSuccessful()) {
                 log.error(String.format("Error when attempting to save API %s version %s", swaggerHubRequest.getApi(), swaggerHubRequest.getVersion()));
-                log.error("Error response: "+response.body().string());
+                log.error("Error response: " + response.body().string());
                 response.body().close();
             }
             return Optional.ofNullable(response);
@@ -105,9 +144,9 @@ public class SwaggerHubClient {
         Request httpRequest = buildPutRequest(httpUrl, mediaType, saveSCMPluginConfigRequest.getRequestBody());
         try {
             Response response = client.newCall(httpRequest).execute();
-            if(!response.isSuccessful()){
-                log.error(String.format("Error when attempting to save %s plugin integration for API %s version %s", saveSCMPluginConfigRequest.getScmProvider(), saveSCMPluginConfigRequest.getApi(),saveSCMPluginConfigRequest.getVersion()));
-                log.error("Error response: "+response.body().string());
+            if (!response.isSuccessful()) {
+                log.error(String.format("Error when attempting to save %s plugin integration for API %s version %s", saveSCMPluginConfigRequest.getScmProvider(), saveSCMPluginConfigRequest.getApi(), saveSCMPluginConfigRequest.getVersion()));
+                log.error("Error response: " + response.body().string());
                 response.body().close();
             }
             return Optional.ofNullable(response);
@@ -139,26 +178,26 @@ public class SwaggerHubClient {
     }
 
     private HttpUrl getDownloadUrl(SwaggerHubRequest swaggerHubRequest) {
-        return getBaseUrl(swaggerHubRequest.getOwner(), swaggerHubRequest.getApi())
+        return getBaseUrl(swaggerHubRequest.getDefinitionType(), swaggerHubRequest.getOwner(), swaggerHubRequest.getApi())
                 .addEncodedPathSegment(swaggerHubRequest.getVersion())
                 .build();
     }
 
     private HttpUrl getUploadUrl(SwaggerHubRequest swaggerHubRequest) {
-        return getBaseUrl(swaggerHubRequest.getOwner(), swaggerHubRequest.getApi())
+        return getBaseUrl(swaggerHubRequest.getDefinitionType(), swaggerHubRequest.getOwner(), swaggerHubRequest.getApi())
                 .addEncodedQueryParameter("version", swaggerHubRequest.getVersion())
                 .addEncodedQueryParameter("isPrivate", Boolean.toString(swaggerHubRequest.isPrivate()))
                 .addEncodedQueryParameter("oas", swaggerHubRequest.getOas())
                 .build();
     }
 
-    private HttpUrl.Builder getBaseUrl(String owner, String api) {
+    private HttpUrl.Builder getBaseUrl(DefinitionType definitionType, String owner, String api) {
         HttpUrl.Builder httpUrlBuilder = new HttpUrl.Builder()
                 .scheme(protocol)
                 .host(host)
                 .port(port);
-                return addOptionalPathSegment(httpUrlBuilder, basePath)
-                .addPathSegment(APIS)
+        return addOptionalPathSegment(httpUrlBuilder, basePath)
+                .addPathSegment(definitionType.getPathSegment())
                 .addEncodedPathSegment(owner)
                 .addEncodedPathSegment(api);
     }
@@ -168,7 +207,7 @@ public class SwaggerHubClient {
                 .scheme(protocol)
                 .host(host)
                 .port(port);
-                return addOptionalPathSegment(httpUrlBuilder, basePath)
+        return addOptionalPathSegment(httpUrlBuilder, basePath)
                 .addPathSegment("plugins")
                 .addPathSegment("configurations")
                 .addEncodedPathSegment(saveSCMPluginConfigRequest.getOwner())
@@ -179,8 +218,8 @@ public class SwaggerHubClient {
                 .build();
     }
 
-    private HttpUrl.Builder addOptionalPathSegment(HttpUrl.Builder builder, String pathSegment){
-        if(StringUtils.isEmpty(pathSegment)){
+    private HttpUrl.Builder addOptionalPathSegment(HttpUrl.Builder builder, String pathSegment) {
+        if (StringUtils.isEmpty(pathSegment)) {
             return builder;
         }
         return builder.addPathSegment(pathSegment);
